@@ -45,8 +45,6 @@ class NodeC():
         self.inbound = [] # Connections others made to you.  Store Address
         self.osock=[]
         self.isock=[]
-        self.running= True
-
     def create_connection_to_other_node(self,port_on_my_device , address_of_other_node):
         # print(type(port_on_my_device), address_of_other_node)
         if address_of_other_node in self.inbound or address_of_other_node in self.outbound:
@@ -55,7 +53,7 @@ class NodeC():
         else:
             #Create outbound connection
             outsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            outsock.bind((myIP, port_on_my_device)) # created socket on node to connect to rendezvous server to discover peers
+            outsock.bind(('', port_on_my_device)) # created socket on node to connect to rendezvous server to discover peers
             
             try:
                 outsock.connect(address_of_other_node)
@@ -71,10 +69,10 @@ class NodeC():
     def clisten(self,listening_port): #listen on tcp socket
         # For create inbound connections
         insock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        insock.bind((myIP, listening_port)) # created socket on node to listen inbound
+        insock.bind(('', listening_port)) # created socket on node to listen inbound
         insock.listen()
         print('Listening for incoming connection on,',myIP,':',listening_port)
-        while self.running: #listen for inbound tcp connections
+        while True: #listen for inbound tcp connections
             conn, addr = insock.accept()
             if (conn not in self.inbound) and (conn not in self.outbound):
                 thread = threading.Thread(target=self.handle_inbound_node, args=(conn,addr,) )
@@ -91,22 +89,17 @@ class NodeC():
             try:
                 msg_length , addr = conn.recvfrom(1024)
                 msg_length =msg_length.decode()
-                # print(addr)
-                if msg_length:
+                if msg_length=='Alive!': #ack message
+                    conn.settimeout(100) # timeout of 10 sec
+                elif msg_length:
                     msg_length = int(msg_length)
                     msg = conn.recv(msg_length).decode()
-                    if msg=='Alive!': #ack message
-                        conn.settimeout(100) # timeout of 10 sec
-                    else:
-                        print(msg)
-                    if msg.startswith('ftp '): #create a new tcp connection for ftp
-                        filename, destination_port = msg[4:].split(SEPARATOR)
-                        destination_port =int(destination_port)
-                        # metadata , addr = conn.recvfrom(1024).decode()
-                        # filename, destination_port = metadata.split(SEPARATOR)
-                        thread = threading.Thread(target=self.file_send_transfer, args=(filename,destination_port,address_of_other_node) )
+                    print(msg)
+                    if msg=='ftp': #create a new tcp connection for ftp
+                        metadata , addr = conn.recvfrom(1024).decode()
+                        filename, destination_port = metadata.split(SEPARATOR)
+                        thread = threading.Thread(target=self.file_transfer, args=(filename,destination_port,addr) )
                         thread.start()
-                        thread.join()
             except socket.error as e:
                 conn.close()
                 print(f'#Inbound Connection Closed {address_of_other_node}')
@@ -123,24 +116,19 @@ class NodeC():
             try:
                 msg_length , addr = conn.recvfrom(1024) # Try to receive Acknowledgement or msg length
                 msg_length =msg_length.decode()
-                # print(addr)
 
-                if msg_length:
+                if msg_length=='Alive!': #ack message
+                    conn.settimeout(100) # timeout of 10 sec
+                elif msg_length:
                     msg_length = int(msg_length)
                     msg = conn.recv(msg_length).decode()
-                    if msg=='Alive!': #ack message
-                        conn.settimeout(100) # timeout of 10 sec
-                    else:
-                        print(msg)
-                    if msg.startswith('ftp '): #create a new tcp connection for ftp
+                    print(msg)
+                    if msg=='ftp': #create a new tcp connection for ftp
                         SEPARATOR=","
-                        filename, destination_port = msg[4:].split(SEPARATOR)
-                        destination_port =int(destination_port)
-                        # metadata , addr = conn.recvfrom(1024).decode()
-                        # filename, destination_port = metadata.split(SEPARATOR)
-                        thread = threading.Thread(target=self.file_send_transfer, args=(filename,destination_port,address_of_other_node) )
+                        metadata , addr = conn.recvfrom(1024).decode()
+                        filename, destination_port = metadata.split(SEPARATOR)
+                        thread = threading.Thread(target=self.file_send_transfer, args=(filename,destination_port,addr) )
                         thread.start()
-                        thread.join()
             except socket.error as e:
                 conn.close()
                 print(f'#Outbound Connection Closed {address_of_other_node}')
@@ -164,33 +152,27 @@ class NodeC():
             # print(conn)
             self.send('Alive!',conn)
     def file_send_transfer(self,filename,destination_port,tcp_address): #I am sending the file
-        host,communication_port= tcp_address    
-        print('File check exists....')
-        print(tcp_address)
+        host,communication_port= tcp_address        
         if not self.checkExists(filename):
             self.send('File does not Exists!!',tcp_address)
             return
         ftpsender.ftp_send(filename,host,destination_port)
-        print('Sent File!!')
         # threading.Lock()
-        # self.update_metadata(filename,host,communication_port)
+        self.update_metadata(filename,host,communication_port)
         # threading.Lock()        
         
     def file_recv_transfer(self,receive_port,filename):
         open_ftp_port = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # open ftp port where I would receive the file
-        open_ftp_port.bind((myIP, receive_port))
+        open_ftp_port.bind(('', receive_port))
         open_ftp_port.listen()
-        print('Listening on port',receive_port,' for file incoming')
         conn, addr = open_ftp_port.accept()
-        print('Conn accepted',receive_port,' for file incoming')
-        print('Receiving File....')
-        
+      
         path = './recv'
         file = os.path.join(path, filename)
         with open(file, "wb") as f:
             while True:
             # read 4096 bytes from the socket (receive)
-                bytes_read = conn.recv(4096)
+                bytes_read = open_ftp_port.recv(4096)
                 if not bytes_read:    
                     # nothing is received
                     # file transmitting is done
@@ -198,7 +180,7 @@ class NodeC():
                 # write to the file the bytes we just received
                 f.write(bytes_read)
                 # update the progress bar
-            conn.close()
+
             open_ftp_port.close()
                 # close the FTP socket
         print(filename+ " received")
@@ -254,12 +236,6 @@ while True:
     if msg=='all':
         print('Outbound=',my.outbound)
         print('Inbound=',my.inbound)
-    if msg=='exit':
-        my.running = False
-        exit()
-        listener.join()
-        print('Exiting the programming.....')
-        break
     if msg.startswith('!create'):
         msg=msg[8:]
         port_on_my_device , ip , port = parse_create(msg)
@@ -271,16 +247,15 @@ while True:
         msg=msg[6:]
         ip, port, msg = parse_send(msg)
         
-        if msg.startswith('ftp '):
-            print("in ftp...")
+        if msg.startswith('ftp'):
             filename, receive_port = parse_ftp(msg[4:])
             thread = threading.Thread(target=my.file_recv_transfer, args=(receive_port,filename) )
             thread.start()
         for addr,conn in zip(my.inbound,my.isock):
-            if (ip,port)==addr:
+            if ip==addr[0]:
                 my.send(msg,conn)               
         for addr,conn in zip(my.outbound,my.osock):
-            if (ip,port)==addr:
+            if ip==addr[0]:
                 my.send(msg,conn)
     # else:
     #     print("Incorrent Input!!")
